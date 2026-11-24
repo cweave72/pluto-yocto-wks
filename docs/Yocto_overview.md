@@ -48,6 +48,7 @@ This document has three functions:
   - [7.4 Recipe outline](#74-recipe-outline)
   - [7.5 Image settings](#75-image-settings)
   - [7.6 Default bitstream](#76-default-bitstream)
+  - [7.7 ADI JTAG bootstrap files](#77-adi-jtag-bootstrap-files)
 - [8. AMP design](#8-amp-design)
   - [8.1 Remoteproc driver](#81-remoteproc-driver)
   - [8.2 Inter-processor interrupt](#82-inter-processor-interrupt)
@@ -75,12 +76,14 @@ This document has three functions:
   - [11.1 Cable](#111-cable)
   - [11.2 Tools](#112-tools)
   - [11.3 Procedures](#113-procedures)
+  - [11.4 Observed behavior with the ADALM-UARTJTAG](#114-observed-behavior-with-the-adalm-uartjtag)
 - [12. Phases](#12-phases)
 - [13. Risks](#13-risks)
 - [14. Target procedures](#14-target-procedures)
   - [14.1 DFU RAM boot (no QSPI write)](#141-dfu-ram-boot-no-qspi-write)
   - [14.2 QSPI write](#142-qspi-write)
   - [14.3 Serial console](#143-serial-console)
+  - [14.4 JTAG RAM boot (no QSPI write)](#144-jtag-ram-boot-no-qspi-write)
 - [15. Development procedures](#15-development-procedures)
   - [15.1 First build](#151-first-build)
   - [15.2 Change a recipe from a different layer](#152-change-a-recipe-from-a-different-layer)
@@ -89,6 +92,7 @@ This document has three functions:
   - [15.5 Add a package to the image](#155-add-a-package-to-the-image)
   - [15.6 Find a build failure](#156-find-a-build-failure)
   - [15.7 Find the value of a variable](#157-find-the-value-of-a-variable)
+  - [15.8 Examine the root file system](#158-examine-the-root-file-system)
 - [16. Metadata syntax reference](#16-metadata-syntax-reference)
   - [16.1 Assignment operators](#161-assignment-operators)
   - [16.2 Overrides](#162-overrides)
@@ -98,6 +102,7 @@ This document has three functions:
   - [17.2 BitBake](#172-bitbake)
   - [17.3 Layers and recipes](#173-layers-and-recipes)
   - [17.4 Devtool and package data](#174-devtool-and-package-data)
+  - [17.5 JTAG](#175-jtag)
 - [18. External references](#18-external-references)
 
 ## 1. Scope and goals
@@ -482,19 +487,20 @@ TMPDIR = "${TOPDIR}/tmp"
 DEPLOY_DIR = "${TOPDIR}/deploy"
 BB_HASHSERVE_DB_DIR ?= "${HOME}/yocto/hashserv"
 INHERIT += "rm_work"
+RM_WORK_EXCLUDE += "core-image-minimal"
 BB_GENERATE_MIRROR_TARBALLS = "1"
 PLUTO_BITSTREAM ?= ""
 EXTRA_IMAGE_FEATURES ?= "allow-empty-password empty-root-password allow-root-login"
 CONF_VERSION = "2"
 ```
 
-| Line                             | Function                                                                             |
-| -------------------------------- | ------------------------------------------------------------------------------------ |
-| `DL_DIR`, `SSTATE_DIR`, `TMPDIR` | `init_build.sh` replaces these lines (section 5.6.1). Use `=`, not `?=` (see below). |
-| `DEPLOY_DIR`                     | Puts the build output in `build/deploy/`. The default is `${TMPDIR}/deploy`.         |
-| `PLUTO_BITSTREAM`                | Path of the platform default `.bit` file. `pluto-fit` needs it (section 7.6).        |
-| `EXTRA_IMAGE_FEATURES`           | Development only: root login without a password. Remove for a release image.         |
-| `CONF_VERSION`                   | Format version of `local.conf`. oe-core requires `2`.                                |
+| Line                             | Function                                                                                |
+| -------------------------------- | --------------------------------------------------------------------------------------- |
+| `DL_DIR`, `SSTATE_DIR`, `TMPDIR` | `init_build.sh` replaces these lines (section 5.6.1). Use `=`, not `?=` (see below).    |
+| `DEPLOY_DIR`                     | Puts the build output in `build/deploy/`. The default is `${TMPDIR}/deploy`.            |
+| `PLUTO_BITSTREAM`                | Path of the platform default `.bit` file. Empty: the ADI stock bitstream (section 7.6). |
+| `EXTRA_IMAGE_FEATURES`           | Development only: root login without a password. Remove for a release image.            |
+| `CONF_VERSION`                   | Format version of `local.conf`. oe-core requires `2`.                                   |
 
 Use `=` for `TMPDIR` in `local.conf`. `bitbake.conf` sets `TMPDIR ?=
 "${TOPDIR}/tmp"` before it reads `local.conf`. The first `?=` assignment
@@ -600,6 +606,7 @@ server instead.
 | Setting                             | Location      | Effect                                                                                                                       |
 | ----------------------------------- | ------------- | ---------------------------------------------------------------------------------------------------------------------------- |
 | `INHERIT += "rm_work"`              | `local.conf`  | Removes the work directory of each recipe after a successful build. `TMPDIR` stays small.                                    |
+| `RM_WORK_EXCLUDE += "<recipe>"`     | `local.conf`  | Keeps the work directory of a recipe. The template keeps `core-image-minimal` for the root file system (section 15.8).       |
 | `RM_WORK_EXCLUDE += "<recipe>"`     | `local.conf`  | Keeps the work directory of a recipe that you debug.                                                                         |
 | `BB_GIT_SHALLOW = "1"`              | Kernel recipe | Clones the kernel with a short history. The git mirror in `DL_DIR` is smaller.                                               |
 | `BB_GENERATE_MIRROR_TARBALLS = "1"` | `local.conf`  | Writes each git mirror as one tarball in `DL_DIR`. One large file transfers faster than many small files on a network share. |
@@ -648,6 +655,7 @@ meta-pluto-platform/
       zynq-remoteproc.bb          inherit module
   recipes-bsp/
     pluto-bitstream/              default bitstream for the FIT image and /lib/firmware
+    pluto-jtag-bootstrap/         fetches the ADI JTAG bootstrap files
     pluto-fit/                    makes pluto.itb, pluto.frm, pluto.dfu
   recipes-core/
     images/                       core-image-minimal settings
@@ -825,6 +833,64 @@ The stock u-boot loads a FIT image from `qspi-linux`. The `pluto-fit` recipe
 makes this image. The recipe copies the structure of
 `plutosdr-fw/scripts/pluto.its`.
 
+#### What a FIT image is
+
+FIT (Flattened Image Tree) is the u-boot format for a multi-image file. A FIT
+image uses the device tree format. It holds the boot images and a list of
+boot configurations in one file.
+
+| Part              | Content                                                                                                         |
+| ----------------- | --------------------------------------------------------------------------------------------------------------- |
+| `/images`         | One node for each binary: kernel, device trees, ramdisk, bitstream. Each node has type, load address, and data. |
+| `hash@1`          | A checksum (MD5 for the Pluto) for each image. u-boot checks it before it uses the image.                       |
+| `/configurations` | Named sets of images, for example `config@2` = kernel + `fdt@2` + ramdisk + `fpga@1`.                           |
+| `default`         | The configuration that u-boot uses if the boot command gives no name.                                           |
+
+The source file is an image tree source (`.its`). The `.its` file gives the
+paths of the binaries. `mkimage -f pluto.its pluto.itb` reads the binaries and
+writes the image tree blob (`.itb`). The `.itb` file contains all data.
+
+`bootm <address>#<configuration>` boots from a FIT image in RAM. u-boot finds
+the configuration, checks the hashes, and loads the bitstream into the PL. It
+then puts the kernel and the ramdisk at their load addresses. It writes the
+ramdisk location and the command line into the device tree, and starts the
+kernel.
+
+#### Purpose of the FIT image
+
+The FIT image is the persistent boot image of the platform. It goes into the
+`qspi-linux` partition, and the Pluto boots it at each power-on without a
+host or a debugger.
+
+| Boot method                  | Boot image                     | Persistent |
+| ---------------------------- | ------------------------------ | ---------- |
+| QSPI boot (power-on)         | FIT image in `qspi-linux`      | Yes        |
+| DFU RAM boot (section 14.1)  | FIT image (`pluto.dfu`) in DDR | No         |
+| JTAG RAM boot (section 14.4) | Separate files in DDR, no FIT  | No         |
+
+The image uses the FIT format because the stock u-boot expects it. The stock
+FSBL and u-boot stay in QSPI (section 3). The stock u-boot environment
+(`include/configs/zynq_pluto_sdr.h` in the ADI u-boot) does these steps:
+
+1. `adi_hwref` finds the hardware revision. It sets `fit_config`, for example `config@9`.
+2. `sf read ${fit_load_address} 0x200000 ${fit_size}` copies the FIT image from `qspi-linux` to `0x2080000`.
+3. `bootm ${fit_load_address}#${fit_config}` boots the configuration for the revision.
+
+The FIT image gives these properties:
+
+| Property                    | Reason                                                                                                         |
+| --------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| One file                    | The DFU update and the mass-storage update (`.frm`) write one file to `qspi-linux`.                            |
+| One image for all revisions | The image holds the device trees of Rev.A, Rev.B, and Rev.C. u-boot selects one at boot.                       |
+| Bitstream before Linux      | u-boot loads `fpga@1` before the kernel starts. The PL peripherals in the device tree exist at probe time.     |
+| Integrity check             | u-boot checks the hash of each image. A damaged write stops the boot, and u-boot enters DFU mode.              |
+| Fixed format                | The stock u-boot has no other boot command for `qspi-linux`. A different format needs a new u-boot (phase P4). |
+
+The JTAG RAM boot does not use the FIT image. `xsdb` loads each binary into
+DDR, and the script does the u-boot device tree steps. Use the JTAG RAM boot
+for development. Write the FIT image to QSPI to keep a boot image on the
+board.
+
 Oe-core has a `kernel-fitimage` class. The workspace does not use it. The
 class cannot write the Pluto `magic` property or the `fpga@1` node in the
 stock format.
@@ -923,8 +989,10 @@ partition (section 9.8.2).
 ### 7.6 Default bitstream
 
 The `pluto-bitstream` recipe supplies the platform default bitstream. The
-`PLUTO_BITSTREAM` variable in `local.conf` gives the path or URI. The recipe
-puts the bitstream in two locations:
+`PLUTO_BITSTREAM` variable in `local.conf` gives the path. If
+`PLUTO_BITSTREAM` is empty, the recipe uses the ADI stock `system_top.bit`
+from `pluto-jtag-bootstrap` (section 7.7). The recipe puts the bitstream in
+two locations:
 
 | Location                              | Use                                           |
 | ------------------------------------- | --------------------------------------------- |
@@ -934,6 +1002,26 @@ puts the bitstream in two locations:
 The default bitstream must agree with the AXI peripherals in the Linux base
 device tree. It must contain the platform contract items, for example the IPI
 mailbox (section 9.9).
+
+### 7.7 ADI JTAG bootstrap files
+
+The `pluto-jtag-bootstrap` recipe fetches `plutosdr-jtag-bootstrap-v0.39.zip`
+from the ADI `plutosdr-fw` release. `SRC_URI[sha256sum]` pins the archive.
+The fetcher keeps the archive in `DL_DIR`. The layer keeps no binary files.
+
+| File             | Content                                 | Use                              |
+| ---------------- | --------------------------------------- | -------------------------------- |
+| `ps7_init.tcl`   | PS initialization for the ADI stock HDL | JTAG boot (section 14.4)         |
+| `system_top.bit` | ADI stock bitstream                     | JTAG boot, default FIT bitstream |
+| `u-boot.elf`     | ADI u-boot (GPL-2.0-or-later)           | JTAG u-boot start (`--uboot`)    |
+
+Output: `${DEPLOY_DIR_IMAGE}/adi-jtag-bootstrap/`. The machine configuration
+sets `EXTRA_IMAGEDEPENDS = "pluto-jtag-bootstrap"`. Each image build deploys
+the files.
+
+The recipe fetches the files from ADI. The repositories do not distribute
+them. `LICENSE = "GPL-2.0-or-later & Proprietary"` records the u-boot license
+and the ADI HDL and Vivado output.
 
 ## 8. AMP design
 
@@ -1432,8 +1520,23 @@ Make an adapter cable. Check the pinout and VREF before you apply power.
 
 ### 11.3 Procedures
 
-- Bootloader recovery: use the pattern in `plutosdr-fw/scripts/run-xsdb.tcl`. Use `ps7_init.tcl` from the project HDL.
+- RAM boot of Linux: section 14.4.
+- Bootloader recovery: run `scripts/jtag/pluto-jtag-boot.sh --uboot`. The script loads `u-boot.elf` into DDR.
 - CPU1 debug: attach to Cortex-A9 core 1. Linux continues on core 0.
+
+### 11.4 Observed behavior with the ADALM-UARTJTAG
+
+| Item                               | Observation                                                                                                        |
+| ---------------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| JTAG chain                         | `arm_dap` (idcode `4ba00477`), `xc7z010` (idcode `13722093`).                                                      |
+| Boot mode (`BOOT_MODE` 0xF800025C) | 0 (JTAG). The BootROM runs no code from QSPI. CPU0 waits for the debugger with the MMU and the caches off.         |
+| QSPI flash                         | u-boot and Linux read JEDEC ID `00 00 00`. QSPI flash access is not available in this configuration.               |
+| Hardware revision                  | u-boot `adi_hwref` gives `config@9` (XADC VP/VN 899). `config@9` uses `fdt@2`, `zynq-pluto-sdr-revb.dtb`.          |
+| Cable drivers                      | Run `install_drivers` from `<Vivado>/data/xicom/cable_drivers/lin64/install_script/install_drivers/` as root once. |
+
+`adi_hwref` reads the XADC VP/VN channel. The result in units of 1/1000 of
+full scale, divided by 100 and rounded, gives `config@N`. A JEDEC ID check
+identifies Rev.A before the XADC read.
 
 ## 12. Phases
 
@@ -1482,10 +1585,69 @@ the project HDL default bitstream in P2.
 ### 14.3 Serial console
 
 ```
-picocom -b 115200 /dev/ttyUSB0
+minicom -D /dev/serial/by-id/usb-Silicon_Labs_CP2104_USB_to_UART_Bridge_Controller_<serial>-if00-port0 -b 115200
 ```
 
-The CP2103 on the ADALM-UARTJTAG gives a `/dev/ttyUSB*` device on the host.
+The CP2104 on the ADALM-UARTJTAG gives a `/dev/ttyUSB*` device on the host.
+The JTAG-HS3 also gives a `/dev/ttyUSB*` device. Use the `/dev/serial/by-id/`
+name to select the CP2104.
+
+### 14.4 JTAG RAM boot (no QSPI write)
+
+Requirements:
+
+- The JTAG-HS3 and the ADALM-UARTJTAG connect the host to the Pluto (section 11).
+- The cable drivers are installed (section 11.4).
+- `bitbake core-image-minimal` is complete. It deploys the ADI JTAG bootstrap files (section 7.7).
+
+Procedure:
+
+1. Open the serial console (section 14.3).
+2. Run `scripts/jtag/pluto-jtag-boot.sh`. The default hardware revision is Rev.B.
+3. Log in as `root` on the serial console. The image has no password.
+
+`pluto-jtag-boot.sh` does these steps:
+
+| Step | Action                                                                                                     |
+| ---- | ---------------------------------------------------------------------------------------------------------- |
+| 1    | Copies the DTB. Writes `linux,initrd-start`, `linux,initrd-end`, and `bootargs` into `/chosen` (`fdtput`). |
+| 2    | Starts `xsdb` with `scripts/jtag/pluto-jtag-boot.tcl`.                                                     |
+| 3    | `rst -system`, then stops CPU0.                                                                            |
+| 4    | Programs the PL with `system_top.bit` (`fpga -file`).                                                      |
+| 5    | Runs `ps7_init` and `ps7_post_config`.                                                                     |
+| 6    | Clears the SCTLR M, C, and I bits.                                                                         |
+| 7    | Loads the zImage, the DTB, and the initramfs into DDR (`dow -data`).                                       |
+| 8    | Sets r0 = 0, r1 = 0xffffffff, r2 = DTB address, CPSR = 0x1d3 (SVC, IRQ and FIQ masked), pc = zImage.       |
+| 9    | Starts CPU0. CPU0 starts CPU1 during the kernel SMP start.                                                 |
+
+| Image     | DDR address  |
+| --------- | ------------ |
+| zImage    | `0x01000000` |
+| DTB       | `0x02000000` |
+| initramfs | `0x04000000` |
+
+The kernel decompresses itself to `0x8000`. No u-boot runs, so the script
+writes the initramfs location and the command line into the DTB.
+
+The stock `ps7_init.tcl` and `system_top.bit` agree with the ADI device tree.
+The device tree has nodes for PL peripherals. Linux reads PL registers during
+the driver probes. Do not boot this device tree without a bitstream. Use
+`--bit=none` only with a device tree that has no PL nodes.
+
+| Option              | Use                                                                         |
+| ------------------- | --------------------------------------------------------------------------- |
+| `--rev=REV`         | Hardware revision `a`, `b`, or `c` (default: `b`). Selects the default DTB. |
+| `--dtb=FILE`        | Device tree blob.                                                           |
+| `--kernel=FILE`     | zImage.                                                                     |
+| `--initrd=FILE`     | cpio.gz initramfs.                                                          |
+| `--bit=FILE`        | Bitstream. `--bit=none`: do not program the PL.                             |
+| `--ps7-init=FILE`   | `ps7_init.tcl` from the HDL project.                                        |
+| `--bootargs=STRING` | Kernel command line.                                                        |
+| `--uboot[=FILE]`    | Start `u-boot.elf` instead of Linux.                                        |
+| `--url=HOST:PORT`   | Remote `hw_server`.                                                         |
+
+Set `XSDB=<path>` if `xsdb` is not in `PATH`. The script also finds
+`/opt/Xilinx/<version>/Vivado/bin/xsdb`.
 
 ## 15. Development procedures
 
@@ -1545,6 +1707,34 @@ The `%` in the file name matches all recipe versions.
 2. For the full history of the variable, run `bitbake -e <recipe> | less`. Search for `# $<VARIABLE>`.
 
 The history shows each file and line that sets or changes the variable.
+
+### 15.8 Examine the root file system
+
+The image recipe assembles the root file system in `IMAGE_ROOTFS`:
+
+```
+~/yocto/pluto_tmp/work/pluto-poky-linux-gnueabi/core-image-minimal/1.0/rootfs/
+```
+
+1. Make sure that `local.conf` has `RM_WORK_EXCLUDE += "core-image-minimal"`. Without it, `rm_work` removes the directory after the build.
+2. If the directory is missing, run `bitbake -C rootfs core-image-minimal`. BitBake assembles the root file system again.
+3. Find the path: `bitbake-getvar -r core-image-minimal --value IMAGE_ROOTFS`.
+
+The files show your user as owner. The pseudo database in the work directory
+keeps the target owners and permissions. The cpio archive has the target
+owners.
+
+Other views of the image:
+
+```
+# Packages and versions in the image
+cat build/deploy/images/pluto/core-image-minimal-pluto.rootfs.manifest
+# Files in the cpio archive, with the target owners
+zcat build/deploy/images/pluto/core-image-minimal-pluto.rootfs.cpio.gz | cpio -tv
+```
+
+`bitbake -C rootfs` marks `do_rootfs` as "tainted from a forced run". The
+warning has no effect on the output.
 
 ## 16. Metadata syntax reference
 
@@ -1614,24 +1804,79 @@ the distro name, the architecture, and `class-target` or `class-native`.
 
 ### 17.2 BitBake
 
-| Command                                | Use                                                         |
-| -------------------------------------- | ----------------------------------------------------------- |
-| `bitbake core-image-minimal`           | Build the initramfs.                                        |
-| `bitbake pluto-fit`                    | Build `pluto.itb`, `pluto.frm`, `pluto.dfu`.                |
-| `bitbake -p`                           | Parse all metadata. Do not build.                           |
-| `bitbake -c listtasks <recipe>`        | Show the tasks of a recipe.                                 |
-| `bitbake -c <task> <recipe>`           | Run one task and the tasks before it.                       |
-| `bitbake -c <task> -f <recipe>`        | Run one task again. Ignore the stamp.                       |
-| `bitbake -c devshell <recipe>`         | Open a shell in the build environment of a recipe.          |
-| `bitbake -c menuconfig virtual/kernel` | Change the kernel configuration.                            |
-| `bitbake -c diffconfig virtual/kernel` | Write a configuration fragment from the changes.            |
-| `bitbake -c clean <recipe>`            | Remove the build output of a recipe.                        |
-| `bitbake -c cleansstate <recipe>`      | Remove the build output and the sstate of a recipe.         |
-| `bitbake -c cleanall <recipe>`         | Remove the build output, sstate, and downloads of a recipe. |
-| `bitbake -e <recipe>`                  | Show the recipe environment with variable history.          |
-| `bitbake -g <recipe>`                  | Write the dependency graph (`task-depends.dot`).            |
-| `bitbake -k <recipe>`                  | Continue after a failure. Build as much as possible.        |
-| `bitbake-getvar -r <recipe> <VAR>`     | Show one variable value for a recipe.                       |
+Run the commands in the build environment (`. init_build.sh`). `<recipe>`
+is a recipe name, for example `linux-pluto`, or a provider, for example
+`virtual/kernel`. `<target>` is a recipe that BitBake builds with all its
+dependencies, for example `core-image-minimal`.
+
+#### Build
+
+| Command                                | Use                                                                |
+| -------------------------------------- | ------------------------------------------------------------------ |
+| `bitbake core-image-minimal`           | Build the initramfs, the kernel, and the JTAG bootstrap files.     |
+| `bitbake pluto-fit`                    | Build `pluto.itb`, `pluto.frm`, `pluto.dfu`.                       |
+| `bitbake core-image-minimal pluto-fit` | Build two targets in one run.                                      |
+| `bitbake -k <target>`                  | Continue after a failure. Build as much as possible.               |
+| `bitbake -n <target>`                  | Dry run. Show the task count. Run no tasks.                        |
+| `bitbake -p`                           | Parse all metadata. Do not build. Shows syntax errors.             |
+| `bitbake --runall=fetch <target>`      | Download all sources for a target. Then the build can run offline. |
+
+#### Tasks
+
+| Command                             | Use                                                                  |
+| ----------------------------------- | -------------------------------------------------------------------- |
+| `bitbake -c listtasks <recipe>`     | Show the tasks of a recipe.                                          |
+| `bitbake -c <task> <recipe>`        | Run one task and the tasks before it.                                |
+| `bitbake -f -c <task> <recipe>`     | Run one task again. Ignore the stamp. The tasks after it do not run. |
+| `bitbake -C <task> <recipe>`        | Run one task again and all tasks after it. Example: `-C rootfs`.     |
+| `bitbake --runonly=<task> <target>` | Run only one task type for all recipes of a target.                  |
+| `bitbake -c devshell <recipe>`      | Open a shell in the build environment of a recipe.                   |
+| `bitbake -c clean <recipe>`         | Remove the build output of a recipe.                                 |
+| `bitbake -c cleansstate <recipe>`   | Remove the build output and the sstate of a recipe.                  |
+| `bitbake -c cleanall <recipe>`      | Remove the build output, sstate, and downloads of a recipe.          |
+
+#### Kernel
+
+| Command                                           | Use                                                                   |
+| ------------------------------------------------- | --------------------------------------------------------------------- |
+| `bitbake -c menuconfig virtual/kernel`            | Change the kernel configuration.                                      |
+| `bitbake -c diffconfig virtual/kernel`            | Write a configuration fragment from the `menuconfig` changes.         |
+| `bitbake -c savedefconfig virtual/kernel`         | Write a minimal `defconfig` into the kernel build directory.          |
+| `bitbake -c kernel_configcheck -f virtual/kernel` | Report fragment options that the final `.config` does not contain.    |
+| `bitbake -C compile virtual/kernel`               | Compile the kernel again after a source change in the work directory. |
+
+#### Inspect
+
+| Command                                          | Use                                                              |
+| ------------------------------------------------ | ---------------------------------------------------------------- |
+| `bitbake-getvar -r <recipe> <VAR>`               | Show one variable for a recipe, with its assignment history.     |
+| `bitbake-getvar -r <recipe> --value <VAR>`       | Show only the value of one variable for a recipe.                |
+| `bitbake-getvar --value <VAR>`                   | Show the global value of one variable.                           |
+| `bitbake -e <recipe>`                            | Show the full recipe environment. Search the output for `^VAR=`. |
+| `bitbake -s`                                     | Show the selected and preferred version of each recipe.          |
+| `bitbake -g <target>`                            | Write the dependency graph (`task-depends.dot`).                 |
+| `oe-depends-dot -k <recipe> -w task-depends.dot` | Show why a target includes a recipe.                             |
+| `oe-depends-dot -k <recipe> -d task-depends.dot` | Show the dependencies of a recipe.                               |
+
+#### Signatures and sstate
+
+| Command                               | Use                                                                             |
+| ------------------------------------- | ------------------------------------------------------------------------------- |
+| `bitbake -S printdiff <target>`       | Show why tasks do not come from sstate. Compares with the closest sstate match. |
+| `bitbake-diffsigs -t <recipe> <task>` | Compare the last two signatures of a task. Shows the changed variables.         |
+| `bitbake-dumpsig -t <recipe> <task>`  | Show the variables and files in the signature of a task.                        |
+| `bitbake --setscene-only <target>`    | Restore tasks from sstate only. Run no real tasks.                              |
+| `bitbake --no-setscene <target>`      | Ignore sstate. Run all tasks.                                                   |
+
+#### Server and logs
+
+| Command or file                                               | Use                                                          |
+| ------------------------------------------------------------- | ------------------------------------------------------------ |
+| `bitbake -m`                                                  | Stop the BitBake server. Use it after "bitbake.lock" errors. |
+| `bitbake -v -D <target>`                                      | Show shell commands (`set -x`) and debug messages.           |
+| `${TMPDIR}/log/cooker/pluto/console-latest.log`               | Console output of the last BitBake run.                      |
+| `${TMPDIR}/work/<arch>/<recipe>/<version>/temp/log.do_<task>` | Log of one task.                                             |
+| `${TMPDIR}/work/<arch>/<recipe>/<version>/temp/run.do_<task>` | Script of one task. Shows the exact commands of the task.    |
 
 ### 17.3 Layers and recipes
 
@@ -1655,6 +1900,15 @@ the distro name, the architecture, and `class-target` or `class-native`.
 | `devtool reset <recipe>`               | Remove a recipe from the devtool workspace. |
 | `oe-pkgdata-util find-path <file>`     | Find the package that installs a file.      |
 | `oe-pkgdata-util list-pkg-files <pkg>` | Show the files in a package.                |
+
+### 17.5 JTAG
+
+| Command                                   | Use                                    |
+| ----------------------------------------- | -------------------------------------- |
+| `scripts/jtag/pluto-jtag-boot.sh`         | Boot Linux from RAM over JTAG.         |
+| `scripts/jtag/pluto-jtag-boot.sh --uboot` | Start u-boot from RAM over JTAG.       |
+| `xsdb` then `connect`, `targets`          | Show the JTAG targets.                 |
+| `xsdb` then `mrd 0xF800025C`              | Read `BOOT_MODE`. 0 is JTAG boot mode. |
 
 ## 18. External references
 

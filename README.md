@@ -34,8 +34,9 @@ Build the initramfs:
 bitbake core-image-minimal
 ```
 
-Build the FIT firmware image. Set `PLUTO_BITSTREAM` in `build/conf/local.conf`
-to the path of a `.bit` file first:
+Build the FIT firmware image. The FIT image contains the ADI stock bitstream.
+To use a different bitstream, set `PLUTO_BITSTREAM` in `build/conf/local.conf`
+to the path of a `.bit` file:
 
 ```
 bitbake pluto-fit
@@ -48,3 +49,39 @@ Output: `build/deploy/images/pluto/`
 | `pluto.dfu` | DFU write or DFU RAM boot                |
 | `pluto.frm` | Mass-storage update (stock ADI firmware) |
 | `pluto.itb` | FIT image                                |
+
+## JTAG RAM boot
+
+Boot `core-image-minimal` from RAM with the JTAG-HS3 and the ADALM-UARTJTAG.
+The procedure writes nothing to QSPI flash.
+
+```
+bitbake core-image-minimal
+scripts/jtag/pluto-jtag-boot.sh
+```
+
+`bitbake core-image-minimal` also deploys the ADI JTAG bootstrap files
+(`ps7_init.tcl`, `system_top.bit`, `u-boot.elf`) to
+`build/deploy/images/pluto/adi-jtag-bootstrap/`. The script uses the Rev.B
+device tree. Give `--rev=a` or `--rev=c` for a different hardware revision.
+
+Open the serial console before the boot. The CP2104 on the ADALM-UARTJTAG
+gives the console port. The JTAG-HS3 also gives a `/dev/ttyUSB*` port.
+Select the CP2104 with its `/dev/serial/by-id/` name:
+
+```
+ls /dev/serial/by-id/
+minicom -D /dev/serial/by-id/usb-Silicon_Labs_CP2104_USB_to_UART_Bridge_Controller_*-if00-port0 -b 115200
+```
+
+| Item              | Value                                                                                 |
+| ----------------- | ------------------------------------------------------------------------------------- |
+| Line settings     | 115200 8N1                                                                            |
+| Flow control      | None. Push `Ctrl-A O`, select "Serial port setup", set "Hardware Flow Control" to No. |
+| Save the settings | `Ctrl-A O`, then "Save setup as dfl"                                                  |
+| Exit minicom      | `Ctrl-A X`                                                                            |
+
+Your user must be in the `dialout` group to open the port.
+
+Log in as `root`. The image has no password.
+See `docs/Yocto_overview.md` section 14.4.
