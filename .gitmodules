@@ -1,0 +1,20 @@
+[submodule "bitbake"]
+	path = bitbake
+	url = https://git.openembedded.org/bitbake
+	branch = 2.18
+[submodule "openembedded-core"]
+	path = openembedded-core
+	url = https://git.openembedded.org/openembedded-core
+	branch = wrynose
+[submodule "meta-yocto"]
+	path = meta-yocto
+	url = https://git.yoctoproject.org/meta-yocto
+	branch = wrynose
+[submodule "meta-openembedded"]
+	path = meta-openembedded
+	url = https://git.openembedded.org/meta-openembedded
+	branch = wrynose
+[submodule "meta-pluto-platform"]
+	path = meta-pluto-platform
+	url = https://github.com/cweave72/meta-pluto-platform.git
+	branch = main
