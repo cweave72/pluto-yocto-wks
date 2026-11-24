@@ -474,9 +474,9 @@ Main lines of `meta-pluto-platform/conf/templates/default/local.conf.sample`:
 ```
 MACHINE ??= "pluto"
 DISTRO ?= "pluto"
-DL_DIR ?= "${TOPDIR}/downloads"
-SSTATE_DIR ?= "${TOPDIR}/sstate-cache"
-TMPDIR ?= "${TOPDIR}/tmp"
+DL_DIR = "${TOPDIR}/downloads"
+SSTATE_DIR = "${TOPDIR}/sstate-cache"
+TMPDIR = "${TOPDIR}/tmp"
 BB_HASHSERVE_DB_DIR ?= "${HOME}/yocto/hashserv"
 INHERIT += "rm_work"
 BB_GENERATE_MIRROR_TARBALLS = "1"
@@ -485,12 +485,21 @@ EXTRA_IMAGE_FEATURES ?= "allow-empty-password empty-root-password allow-root-log
 CONF_VERSION = "2"
 ```
 
-| Line                             | Function                                                                      |
-| -------------------------------- | ----------------------------------------------------------------------------- |
-| `DL_DIR`, `SSTATE_DIR`, `TMPDIR` | `init_build.sh` replaces these lines (section 5.6.1).                         |
-| `PLUTO_BITSTREAM`                | Path of the platform default `.bit` file. `pluto-fit` needs it (section 7.6). |
-| `EXTRA_IMAGE_FEATURES`           | Development only: root login without a password. Remove for a release image.  |
-| `CONF_VERSION`                   | Format version of `local.conf`. oe-core requires `2`.                         |
+| Line                             | Function                                                                             |
+| -------------------------------- | ------------------------------------------------------------------------------------ |
+| `DL_DIR`, `SSTATE_DIR`, `TMPDIR` | `init_build.sh` replaces these lines (section 5.6.1). Use `=`, not `?=` (see below). |
+| `PLUTO_BITSTREAM`                | Path of the platform default `.bit` file. `pluto-fit` needs it (section 7.6).        |
+| `EXTRA_IMAGE_FEATURES`           | Development only: root login without a password. Remove for a release image.         |
+| `CONF_VERSION`                   | Format version of `local.conf`. oe-core requires `2`.                                |
+
+Use `=` for `TMPDIR` in `local.conf`. `bitbake.conf` sets `TMPDIR ?=
+"${TOPDIR}/tmp"` before it reads `local.conf`. The first `?=` assignment
+wins, so `TMPDIR ?=` in `local.conf` has no effect. The workspace uses `=` for
+all three cache variables for the same result in all cases.
+
+BitBake records the first `TMPDIR` in `${TMPDIR}/saved_tmpdir`. If `TMPDIR`
+moves, the sanity check stops the build with "TMPDIR has changed location".
+Then remove the old `TMPDIR` directory or move it back.
 
 BitBake calculates `BB_NUMBER_THREADS` and `PARALLEL_MAKE` from the CPU count.
 Set them only to limit the build host load.

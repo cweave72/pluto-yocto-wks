@@ -110,9 +110,9 @@ EOF
 
     # Write the cache locations into local.conf.
     sed -i \
-        -e "s|^DL_DIR ?= .*|DL_DIR ?= \"$PLUTO_DL_DIR\"|" \
-        -e "s|^SSTATE_DIR ?= .*|SSTATE_DIR ?= \"$PLUTO_SSTATE_DIR\"|" \
-        -e "s|^TMPDIR ?= .*|TMPDIR ?= \"$PLUTO_TMPDIR\"|" \
+        -e "s|^DL_DIR [?]*= .*|DL_DIR = \"$PLUTO_DL_DIR\"|" \
+        -e "s|^SSTATE_DIR [?]*= .*|SSTATE_DIR = \"$PLUTO_SSTATE_DIR\"|" \
+        -e "s|^TMPDIR [?]*= .*|TMPDIR = \"$PLUTO_TMPDIR\"|" \
         conf/local.conf
     echo "Cache locations written to $builddir/conf/local.conf."
 }
