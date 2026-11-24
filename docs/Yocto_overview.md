@@ -381,8 +381,10 @@ build/
     local.conf            local build host settings
     bblayers.conf         layer list
     templateconf.cfg      path of the template that made conf/
-  tmp/                    TMPDIR: work directories and output
-    deploy/images/pluto/  final images: zImage, DTBs, cpio.gz, pluto.itb
+  deploy/                 DEPLOY_DIR: build output
+    images/pluto/         final images: zImage, DTBs, cpio.gz, pluto.itb
+    ipk/                  package feed
+  tmp/                    TMPDIR, if local.conf does not move it
     work/                 one work directory for each recipe
   downloads/              DL_DIR, if local.conf does not move it
   sstate-cache/           SSTATE_DIR, if local.conf does not move it
@@ -477,6 +479,7 @@ DISTRO ?= "pluto"
 DL_DIR = "${TOPDIR}/downloads"
 SSTATE_DIR = "${TOPDIR}/sstate-cache"
 TMPDIR = "${TOPDIR}/tmp"
+DEPLOY_DIR = "${TOPDIR}/deploy"
 BB_HASHSERVE_DB_DIR ?= "${HOME}/yocto/hashserv"
 INHERIT += "rm_work"
 BB_GENERATE_MIRROR_TARBALLS = "1"
@@ -488,6 +491,7 @@ CONF_VERSION = "2"
 | Line                             | Function                                                                             |
 | -------------------------------- | ------------------------------------------------------------------------------------ |
 | `DL_DIR`, `SSTATE_DIR`, `TMPDIR` | `init_build.sh` replaces these lines (section 5.6.1). Use `=`, not `?=` (see below). |
+| `DEPLOY_DIR`                     | Puts the build output in `build/deploy/`. The default is `${TMPDIR}/deploy`.         |
 | `PLUTO_BITSTREAM`                | Path of the platform default `.bit` file. `pluto-fit` needs it (section 7.6).        |
 | `EXTRA_IMAGE_FEATURES`           | Development only: root login without a password. Remove for a release image.         |
 | `CONF_VERSION`                   | Format version of `local.conf`. oe-core requires `2`.                                |
@@ -501,8 +505,50 @@ BitBake records the first `TMPDIR` in `${TMPDIR}/saved_tmpdir`. If `TMPDIR`
 moves, the sanity check stops the build with "TMPDIR has changed location".
 Then remove the old `TMPDIR` directory or move it back.
 
-BitBake calculates `BB_NUMBER_THREADS` and `PARALLEL_MAKE` from the CPU count.
-Set them only to limit the build host load.
+`DEPLOY_DIR` is not in the task signatures. If `DEPLOY_DIR` changes after a
+build, BitBake does not run the deploy tasks again. The new `DEPLOY_DIR` stays
+empty, and image tasks fail with "Couldn't find license information". Remove
+`TMPDIR` after a `DEPLOY_DIR` change. The next build restores all tasks from
+sstate.
+
+The sstate manifests in `TMPDIR` record the files in `DEPLOY_DIR`. Always remove
+`TMPDIR` and `DEPLOY_DIR` together. If `DEPLOY_DIR` keeps old files, setscene
+tasks fail with "trying to install files into a shared area when those files
+already exist".
+
+#### Build host load limits
+
+BitBake starts one task for each CPU. Each task runs `make -j <CPUs>`. On a
+host with less than approximately 2 GB RAM for each CPU, these defaults fill
+the RAM. The host then swaps and stops responding.
+
+The template sets these limits for a 12-CPU, 12 GB host:
+
+```
+BB_NUMBER_THREADS = "4"
+PARALLEL_MAKE = "-j 4 -l 12"
+BB_TASK_NICE_LEVEL = "19"
+BB_TASK_IONICE_LEVEL = "2.7"
+BB_PRESSURE_MAX_MEMORY = "20000"
+```
+
+| Variable                 | Effect                                                                                                                                          |
+| ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `BB_NUMBER_THREADS`      | Maximum number of tasks at the same time.                                                                                                       |
+| `PARALLEL_MAKE`          | `-j`: maximum compile jobs in each task. `-l`: `make` starts no new job while the load average is above the value.                              |
+| `BB_TASK_NICE_LEVEL`     | CPU priority of the tasks. `19` is the lowest priority.                                                                                         |
+| `BB_TASK_IONICE_LEVEL`   | Disk priority of the tasks, `class.priority`. `2.7` is the lowest best-effort priority.                                                         |
+| `BB_PRESSURE_MAX_MEMORY` | BitBake starts no new task while the memory stall time is above the value, in microseconds per second (`/proc/pressure/memory`). `20000` is 2%. |
+
+The maximum number of compile jobs is `BB_NUMBER_THREADS` multiplied by the
+`PARALLEL_MAKE` `-j` value. Allow approximately 0.75 GB RAM for each compile job.
+
+BitBake reads `local.conf` only when it starts. To change the limits during a
+build:
+
+1. Push Ctrl-C one time. BitBake completes the active tasks and stops.
+2. Change `local.conf`.
+3. Start the same `bitbake` command again. BitBake does not run the completed tasks again.
 
 ### 5.6 Build caches
 
@@ -512,7 +558,8 @@ Set them only to limit the build host load.
 | --------------------- | ------------------------- | ------------- | ----------------------------------------- |
 | `DL_DIR`              | `~/netshare/yocto_dl`     | Network share | Source archives and git mirrors           |
 | `SSTATE_DIR`          | `~/netshare/yocto_sstate` | Network share | Task output cache                         |
-| `TMPDIR`              | `~/yocto/pluto_tmp`       | Local disk    | Work directories and deploy output        |
+| `TMPDIR`              | `~/yocto/pluto_tmp`       | Local disk    | Work directories and sysroots             |
+| `DEPLOY_DIR`          | `build/deploy`            | Local disk    | Images, package feed, and license data    |
 | `BB_HASHSERVE_DB_DIR` | `~/yocto/hashserv`        | Local disk    | Hash equivalence database (`hashserv.db`) |
 
 `init_build.sh` uses these values as defaults. The `--dl_dir`, `--sstate`, and
@@ -1449,7 +1496,7 @@ The CP2103 on the ADALM-UARTJTAG gives a `/dev/ttyUSB*` device on the host.
 3. Run `bitbake-layers show-layers`. Make sure that all layers show.
 4. Run `bitbake core-image-minimal`.
 5. Run `bitbake pluto-fit`.
-6. Find the output in `${TMPDIR}/deploy/images/pluto/`.
+6. Find the output in `build/deploy/images/pluto/`.
 
 ### 15.2 Change a recipe from a different layer
 
@@ -1482,7 +1529,7 @@ The `%` in the file name matches all recipe versions.
 1. Find the package name: `oe-pkgdata-util find-path <file>` or `bitbake-layers show-recipes`.
 2. Add `IMAGE_INSTALL:append = " <package>"` to the image `.bbappend`.
 3. Run `bitbake core-image-minimal`.
-4. Check the package list in `${TMPDIR}/deploy/images/pluto/*.manifest`.
+4. Check the package list in `build/deploy/images/pluto/*.manifest`.
 
 ### 15.6 Find a build failure
 

@@ -41,7 +41,7 @@ to the path of a `.bit` file first:
 bitbake pluto-fit
 ```
 
-Output: `<TMPDIR>/deploy/images/pluto/`
+Output: `build/deploy/images/pluto/`
 
 | File        | Use                                      |
 | ----------- | ---------------------------------------- |
