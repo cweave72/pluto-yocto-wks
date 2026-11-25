@@ -85,3 +85,20 @@ Your user must be in the `dialout` group to open the port.
 
 Log in as `root`. The image has no password.
 See `docs/Yocto_overview.md` section 14.4.
+
+## SSH over USB
+
+The image configures the Pluto USB data port as a USB network device.
+Connect it to the host, then boot the Pluto.
+
+| Side  | Address                              |
+| ----- | ------------------------------------ |
+| Pluto | `192.168.2.1`                        |
+| Host  | `192.168.2.10` (DHCP from the Pluto) |
+
+```
+ssh root@192.168.2.1
+```
+
+The host keys change at each boot. See `docs/Yocto_overview.md` section 14.5
+for an `~/.ssh/config` entry that stops the warning.

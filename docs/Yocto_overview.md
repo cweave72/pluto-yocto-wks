@@ -41,6 +41,7 @@ This document has three functions:
   - [6.5 Kernel: `linux-pluto`](#65-kernel-linux-pluto)
   - [6.6 Kernel configuration procedure](#66-kernel-configuration-procedure)
   - [6.7 Out-of-tree module: `zynq-remoteproc`](#67-out-of-tree-module-zynq-remoteproc)
+  - [6.8 Base packages of all images](#68-base-packages-of-all-images)
 - [7. Firmware image (FIT)](#7-firmware-image-fit)
   - [7.1 FIT contents](#71-fit-contents)
   - [7.2 Device tree post-processing](#72-device-tree-post-processing)
@@ -84,7 +85,8 @@ This document has three functions:
   - [14.2 QSPI write](#142-qspi-write)
   - [14.3 Serial console](#143-serial-console)
   - [14.4 JTAG RAM boot (no QSPI write)](#144-jtag-ram-boot-no-qspi-write)
-- [15. Development procedures](#15-development-procedures)
+  - [14.5 SSH over USB](#145-ssh-over-usb)
+- [15. Yocto how-to](#15-yocto-how-to)
   - [15.1 First build](#151-first-build)
   - [15.2 Change a recipe from a different layer](#152-change-a-recipe-from-a-different-layer)
   - [15.3 Change source code with `devtool`](#153-change-source-code-with-devtool)
@@ -93,6 +95,7 @@ This document has three functions:
   - [15.6 Find a build failure](#156-find-a-build-failure)
   - [15.7 Find the value of a variable](#157-find-the-value-of-a-variable)
   - [15.8 Examine the root file system](#158-examine-the-root-file-system)
+  - [15.9 Find where a name comes from](#159-find-where-a-name-comes-from)
 - [16. Metadata syntax reference](#16-metadata-syntax-reference)
   - [16.1 Assignment operators](#161-assignment-operators)
   - [16.2 Overrides](#162-overrides)
@@ -206,13 +209,13 @@ BitBake then reads each recipe, its classes, and its appends.
 
 Put each setting in one location only:
 
-| Setting type | File in this workspace                                                                             | Contents                  | Example                                               |
-| ------------ | -------------------------------------------------------------------------------------------------- | ------------------------- | ----------------------------------------------------- |
-| Machine file | `meta-pluto-platform/conf/machine/pluto.conf`                                                      | Hardware settings         | CPU tune, console, kernel provider, device trees      |
-| Distro file  | `meta-pluto-platform/conf/distro/pluto.conf`                                                       | Policy settings           | Init system, distro features, package format          |
-| Image recipe | `meta-pluto-platform/recipes-core/images/core-image-minimal.bbappend`                              | Package selection         | `IMAGE_INSTALL`, `IMAGE_FSTYPES`                      |
-| Recipe       | `meta-pluto-platform/recipes-<category>/<name>/<name>_<version>.bb`                                | Component build           | Source, patches, build commands                       |
-| `local.conf` | `build/conf/local.conf` (template: `meta-pluto-platform/conf/templates/default/local.conf.sample`) | Local build host settings | `DL_DIR`, `SSTATE_DIR`, `TMPDIR`, `BB_NUMBER_THREADS` |
+| Setting type | File in this workspace                                                                             | Contents                    | Example                                               |
+| ------------ | -------------------------------------------------------------------------------------------------- | --------------------------- | ----------------------------------------------------- |
+| Machine file | `meta-pluto-platform/conf/machine/pluto.conf`                                                      | Hardware settings           | CPU tune, console, kernel provider, device trees      |
+| Distro file  | `meta-pluto-platform/conf/distro/pluto.conf`                                                       | Policy settings             | Init system, distro features, package format          |
+| Packagegroup | `meta-pluto-platform/recipes-core/packagegroups/packagegroup-pluto-platform.bb`                    | Base packages of all images | `RDEPENDS:${PN}`                                      |
+| Recipe       | `meta-pluto-platform/recipes-<category>/<name>/<name>_<version>.bb`                                | Component build             | Source, patches, build commands                       |
+| `local.conf` | `build/conf/local.conf` (template: `meta-pluto-platform/conf/templates/default/local.conf.sample`) | Local build host settings   | `DL_DIR`, `SSTATE_DIR`, `TMPDIR`, `BB_NUMBER_THREADS` |
 
 Do not put hardware or policy settings in `local.conf`. Other users and other
 build hosts do not get `local.conf`.
@@ -606,8 +609,7 @@ server instead.
 | Setting                             | Location      | Effect                                                                                                                       |
 | ----------------------------------- | ------------- | ---------------------------------------------------------------------------------------------------------------------------- |
 | `INHERIT += "rm_work"`              | `local.conf`  | Removes the work directory of each recipe after a successful build. `TMPDIR` stays small.                                    |
-| `RM_WORK_EXCLUDE += "<recipe>"`     | `local.conf`  | Keeps the work directory of a recipe. The template keeps `core-image-minimal` for the root file system (section 15.8).       |
-| `RM_WORK_EXCLUDE += "<recipe>"`     | `local.conf`  | Keeps the work directory of a recipe that you debug.                                                                         |
+| `RM_WORK_EXCLUDE += "<recipe>"`     | `local.conf`  | Keeps the work directory of a recipe that you debug. The template keeps `core-image-minimal` (section 15.8).                 |
 | `BB_GIT_SHALLOW = "1"`              | Kernel recipe | Clones the kernel with a short history. The git mirror in `DL_DIR` is smaller.                                               |
 | `BB_GENERATE_MIRROR_TARBALLS = "1"` | `local.conf`  | Writes each git mirror as one tarball in `DL_DIR`. One large file transfers faster than many small files on a network share. |
 
@@ -622,7 +624,7 @@ the other versions. Run it first with `--dry-run` to see the files that it remov
 
 #### 5.6.5 CIFS mount settings
 
-The current mount of `//zbox.local/netshare` uses `vers=1.0,soft`. These
+Check the mount options of the network share (`mount | grep cifs`). These
 settings can cause build failures:
 
 | Setting    | Problem                                                                                     | Recommended value                              |
@@ -656,9 +658,13 @@ meta-pluto-platform/
   recipes-bsp/
     pluto-bitstream/              default bitstream for the FIT image and /lib/firmware
     pluto-jtag-bootstrap/         fetches the ADI JTAG bootstrap files
+  recipes-connectivity/
+    pluto-usb-gadget/             USB network gadget, udhcpd configuration
     pluto-fit/                    makes pluto.itb, pluto.frm, pluto.dfu
   recipes-core/
-    images/                       core-image-minimal settings
+    packagegroups/                packagegroup-pluto-platform: base packages of all images
+    init-ifupdown/                /etc/network/interfaces (usb0 = 192.168.2.1)
+    busybox/                      pluto.cfg: extra applets (base64 for the kitty ssh kitten)
     pluto-personality/            target tool, boot script, runtime package
 ```
 
@@ -677,6 +683,8 @@ bitbake-layers add-layer ../meta-pluto-platform
 ```
 
 ### 6.2 `layer.conf`
+
+File: `meta-pluto-platform/conf/layer.conf`
 
 ```
 BBPATH .= ":${LAYERDIR}"
@@ -708,30 +716,50 @@ Names in this workspace:
 
 ### 6.3 Machine: `pluto.conf`
 
-| Variable                            | Value                                                                                     | Function                                                  |
-| ----------------------------------- | ----------------------------------------------------------------------------------------- | --------------------------------------------------------- |
-| Tune                                | `require conf/machine/include/arm/armv7a/tune-cortexa9.inc`                               | Loads the compiler flags for the Cortex-A9.               |
-| `DEFAULTTUNE`                       | `cortexa9thf-neon`                                                                        | Selects Thumb-2, hard float, and NEON.                    |
-| `SERIAL_CONSOLES`                   | `115200;ttyPS0`                                                                           | Starts a login prompt on the PS UART.                     |
-| `KERNEL_IMAGETYPE`                  | `zImage`                                                                                  | Kernel file format for the FIT image.                     |
-| `KERNEL_EXTRA_ARGS`                 | `UIMAGE_LOADADDR=0x8000`                                                                  | Kernel load address.                                      |
-| `PREFERRED_PROVIDER_virtual/kernel` | `linux-pluto`                                                                             | Selects the kernel recipe.                                |
-| `KERNEL_DEVICETREE`                 | `xilinx/zynq-pluto-sdr.dtb xilinx/zynq-pluto-sdr-revb.dtb xilinx/zynq-pluto-sdr-revc.dtb` | Device trees that the kernel recipe compiles and deploys. |
-| `MACHINE_FEATURES`                  | `usbgadget`                                                                               | Enables recipes that need USB gadget support.             |
+File: `meta-pluto-platform/conf/machine/pluto.conf`
+
+| Variable                            | Value                                                                                     | Function                                                      |
+| ----------------------------------- | ----------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
+| Tune                                | `require conf/machine/include/arm/armv7a/tune-cortexa9.inc`                               | Loads the compiler flags for the Cortex-A9.                   |
+| `DEFAULTTUNE`                       | `cortexa9thf-neon`                                                                        | Selects Thumb-2, hard float, and NEON.                        |
+| `SERIAL_CONSOLES`                   | `115200;ttyPS0`                                                                           | Starts a login prompt on the PS UART.                         |
+| `KERNEL_IMAGETYPE`                  | `zImage`                                                                                  | Kernel file format for the FIT image.                         |
+| `KERNEL_EXTRA_ARGS`                 | `UIMAGE_LOADADDR=0x8000`                                                                  | Kernel load address.                                          |
+| `PREFERRED_PROVIDER_virtual/kernel` | `linux-pluto`                                                                             | Selects the kernel recipe.                                    |
+| `KERNEL_DEVICETREE`                 | `xilinx/zynq-pluto-sdr.dtb xilinx/zynq-pluto-sdr-revb.dtb xilinx/zynq-pluto-sdr-revc.dtb` | Device trees that the kernel recipe compiles and deploys.     |
+| `MACHINE_FEATURES`                  | `usbgadget`                                                                               | Enables recipes that need USB gadget support.                 |
+| `IMAGE_FSTYPES`                     | `?= "cpio.gz"`                                                                            | Writes each image as a compressed `cpio` archive (initramfs). |
+| `MACHINE_ESSENTIAL_EXTRA_RDEPENDS`  | `+= "packagegroup-pluto-platform"`                                                        | Adds the platform base packages to every image (section 6.8). |
 
 ### 6.4 Distro: `pluto.conf`
 
+File: `meta-pluto-platform/conf/distro/pluto.conf`
+
 ```
+PACKAGE_CLASSES ?= "package_ipk"
+INIT_MANAGER ?= "mdev-busybox"
 require conf/distro/poky.conf
 DISTRO = "pluto"
 DISTRO_NAME = "Pluto Linux"
-INIT_MANAGER = "mdev-busybox"
+DISTRO_FEATURES:append = " sysvinit"
 ```
 
 - `require` loads the Poky distro from `meta-poky`. The Pluto distro changes only the settings that it needs.
-- `INIT_MANAGER` selects the init system. `mdev-busybox` gives the smallest initramfs. `sysvinit` gives more standard init scripts.
+- `INIT_MANAGER` selects the init system. `mdev-busybox` uses busybox `init` and `mdev`. It gives a small initramfs.
+- `DISTRO_FEATURES:append = " sysvinit"` is necessary with `mdev-busybox`. The busybox `rcS` script runs the links in `/etc/rcS.d` and `/etc/rc5.d`. `update-rc.d` makes these links only if `sysvinit` is a distro feature. Without it, no init script starts: `mdev`, `syslog`, `dropbear`, and the USB gadget stay off.
+
+Busybox init start sequence:
+
+| Step | Item                                | Action                                                                                                       |
+| ---- | ----------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| 1    | `/etc/inittab` (`::sysinit:`)       | Mounts `/proc`, `/sys`, `/dev`. Runs `/etc/init.d/rcS`.                                                      |
+| 2    | `/etc/rcS.d/S*` (numerical order)   | `sysfs.sh` (S02), `mountall.sh` (S03), `mdev` (S04), `populate-volatile.sh` (S37), `pluto-usb-gadget` (S38). |
+| 3    | `/etc/rc5.d/S*` (numerical order)   | `networking` (S01), `dropbear` (S10), `busybox-udhcpd`, `syslog`.                                            |
+| 4    | `/etc/inittab` (`ttyPS0::respawn:`) | Starts `getty` on the serial console.                                                                        |
 
 ### 6.5 Kernel: `linux-pluto`
+
+File: `meta-pluto-platform/recipes-kernel/linux/linux-pluto_6.12.bb`
 
 | Item               | Value                                           |
 | ------------------ | ----------------------------------------------- |
@@ -750,7 +778,7 @@ The ADI kernel supplies these items:
 - OF configfs overlays (`drivers/of/configfs.c`)
 - exported `zynq_cpun_start()` in `arch/arm/mach-zynq/platsmp.c`
 
-Recipe: `recipes-kernel/linux/linux-pluto_6.12.bb` (main lines).
+Main lines of the recipe:
 
 ```
 require recipes-kernel/linux/linux-yocto.inc
@@ -804,6 +832,8 @@ configuration does not contain. A missing dependency usually causes this.
 
 ### 6.7 Out-of-tree module: `zynq-remoteproc`
 
+File: `meta-pluto-platform/recipes-kernel/zynq-remoteproc/zynq-remoteproc.bb` (phase P3, not in the layer yet)
+
 ```
 SUMMARY = "Zynq-7000 remoteproc driver for CPU1"
 LICENSE = "GPL-2.0-only"
@@ -826,6 +856,40 @@ KERNEL_MODULE_AUTOLOAD += "zynq_remoteproc"
 
 The `Makefile` must have a `modules_install` target. Copy the pattern from
 `openembedded-core/meta-skeleton/recipes-kernel/hello-mod/`.
+
+### 6.8 Base packages of all images
+
+File: `meta-pluto-platform/recipes-core/packagegroups/packagegroup-pluto-platform.bb`
+
+```
+inherit packagegroup
+
+RDEPENDS:${PN} = " \
+    packagegroup-core-ssh-dropbear \
+    pluto-usb-gadget \
+    "
+```
+
+The machine configuration adds the group to every image:
+
+```
+MACHINE_ESSENTIAL_EXTRA_RDEPENDS += "packagegroup-pluto-platform"
+```
+
+`packagegroup-core-boot` includes `MACHINE_ESSENTIAL_EXTRA_RDEPENDS`. All
+oe-core images include `packagegroup-core-boot`, for example
+`core-image-minimal` and `core-image-base`. A new platform image gets the base
+packages without changes.
+
+| Location                                              | Scope                              | Use                                       |
+| ----------------------------------------------------- | ---------------------------------- | ----------------------------------------- |
+| `packagegroup-pluto-platform.bb`                      | All images for `MACHINE = "pluto"` | Packages that every platform image needs. |
+| `IMAGE_INSTALL:append` in an image `.bbappend`        | One image                          | Packages for one image only.              |
+| `CORE_IMAGE_EXTRA_INSTALL += "<pkg>"` in `local.conf` | All images, this build host only   | Local tests. Not in git.                  |
+
+A packagegroup is a recipe with no source. It makes one empty package with
+runtime dependencies. Add a package to `RDEPENDS:${PN}`, then build the image.
+Use the package name, not the recipe name (section 15.5).
 
 ## 7. Firmware image (FIT)
 
@@ -972,7 +1036,7 @@ wait for `do_deploy` or `do_image_complete`. Use `[depends]` for these tasks.
 
 ### 7.5 Image settings
 
-Put these settings in `meta-pluto-platform/recipes-core/images/core-image-minimal.bbappend`:
+Planned settings. Put each setting in the file that its scope needs (section 6.8):
 
 | Variable                            | Value                                  | Function                                                            |
 | ----------------------------------- | -------------------------------------- | ------------------------------------------------------------------- |
@@ -1649,7 +1713,70 @@ the driver probes. Do not boot this device tree without a bitstream. Use
 Set `XSDB=<path>` if `xsdb` is not in `PATH`. The script also finds
 `/opt/Xilinx/<version>/Vivado/bin/xsdb`.
 
-## 15. Development procedures
+### 14.5 SSH over USB
+
+The image configures the USB OTG port as a USB network device. The Pluto
+has the address `192.168.2.1`. The host gets `192.168.2.10` from the Pluto
+DHCP server. Dropbear accepts SSH logins.
+
+| Item                                       | Content                                                                 |
+| ------------------------------------------ | ----------------------------------------------------------------------- |
+| `/etc/init.d/pluto-usb-gadget`             | Makes a configfs gadget with one network function. Binds it to the UDC. |
+| `/etc/default/pluto-usb-gadget`            | USB IDs, function (`ecm` or `ncm`), MAC addresses.                      |
+| `/etc/network/interfaces`                  | `usb0` static `192.168.2.1/24`.                                         |
+| `/etc/udhcpd.conf`                         | One lease, `192.168.2.10`. No router option, no DNS option.             |
+| `dropbear` (`packagegroup-pluto-platform`) | SSH server on port 22. `-B` permits the empty root password.            |
+
+| Setting   | Value                                                |
+| --------- | ---------------------------------------------------- |
+| USB ID    | `1d6b:0104` (Linux Foundation composite gadget)      |
+| Function  | CDC ECM. Set `USB_FUNCTION="ncm"` for Windows hosts. |
+| Pluto MAC | `02:50:4c:00:00:01`                                  |
+| Host MAC  | `02:50:4c:00:00:02`                                  |
+
+The host MAC address is fixed. The host gives the interface the same name
+(`enx02504c000002`) and the same network configuration after each boot.
+
+Procedure:
+
+1. Connect the Pluto USB data port to the host. Do not use the power-only port.
+2. Boot the Pluto (section 14.4).
+3. On the host, make sure that the interface has `192.168.2.10`: `ip addr show enx02504c000002`.
+4. Run `ssh root@192.168.2.1`.
+
+Dropbear makes new host keys at each boot, because the root file system is
+in RAM. SSH then reports a changed host key. Add this entry to
+`~/.ssh/config` on the host:
+
+```
+Host pluto
+    HostName 192.168.2.1
+    User root
+    StrictHostKeyChecking no
+    UserKnownHostsFile /dev/null
+    LogLevel ERROR
+```
+
+Then run `ssh pluto` and `scp <file> pluto:/tmp/`. Use this entry only for a
+development board. Keep the host keys in the persistent partition to remove
+it (section 9.8.2).
+
+The stock ADI firmware also uses `192.168.2.1`. Do not connect a stock Pluto
+and a platform Pluto to the same host at the same time.
+
+Boot messages with no effect on operation:
+
+| Message                                                    | Cause                                                                                                          |
+| ---------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| `modprobe: can't change directory to '/lib/modules'`       | The image contains no kernel modules. All drivers are built in.                                                |
+| `hwclock: can't open '/dev/misc/rtc'`                      | The Pluto has no RTC. The clock starts at the `/etc/timestamp` date.                                           |
+| `grep: /var/volatile/tmp/tmp_volatile.<pid>: No such file` | `populate-volatile.sh` makes `/var/volatile/tmp` after it uses it. The directories are correct after the boot. |
+| `Generating 2048 bit rsa key, this may take a while...`    | Dropbear makes a new host key at each boot (about 2 s).                                                        |
+
+## 15. Yocto how-to
+
+Procedures for common Yocto tasks in this workspace. Run the commands in the
+build environment (`. init_build.sh`).
 
 ### 15.1 First build
 
@@ -1689,9 +1816,10 @@ The `%` in the file name matches all recipe versions.
 ### 15.5 Add a package to the image
 
 1. Find the package name: `oe-pkgdata-util find-path <file>` or `bitbake-layers show-recipes`.
-2. Add `IMAGE_INSTALL:append = " <package>"` to the image `.bbappend`.
-3. Run `bitbake core-image-minimal`.
-4. Check the package list in `build/deploy/images/pluto/*.manifest`.
+2. For all images, add the package to `RDEPENDS:${PN}` in `meta-pluto-platform/recipes-core/packagegroups/packagegroup-pluto-platform.bb`.
+3. For one image only, add `IMAGE_INSTALL:append = " <package>"` to `meta-pluto-platform/recipes-core/images/<image>.bbappend`.
+4. Run `bitbake core-image-minimal`.
+5. Check the package list in `build/deploy/images/pluto/*.manifest`.
 
 ### 15.6 Find a build failure
 
@@ -1735,6 +1863,68 @@ zcat build/deploy/images/pluto/core-image-minimal-pluto.rootfs.cpio.gz | cpio -t
 
 `bitbake -C rootfs` marks `do_rootfs` as "tainted from a forced run". The
 warning has no effect on the output.
+
+### 15.9 Find where a name comes from
+
+Configuration files refer to recipes, packages, and variables by name only.
+Example: `EXTRA_IMAGEDEPENDS = "pluto-jtag-bootstrap"` in
+`meta-pluto-platform/conf/machine/pluto.conf`. The name does not tell where
+the recipe is or where its source comes from. Follow this chain.
+
+#### Name to recipe file
+
+BitBake finds recipe files with two settings:
+
+| Setting    | File                            | Content                                                    |
+| ---------- | ------------------------------- | ---------------------------------------------------------- |
+| `BBLAYERS` | `build/conf/bblayers.conf`      | The layer directories.                                     |
+| `BBFILES`  | `conf/layer.conf` in each layer | File patterns for recipes, for example `recipes-*/*/*.bb`. |
+
+The file name gives the recipe name (`PN`) and the version (`PV`):
+`pluto-jtag-bootstrap_0.39.bb` is recipe `pluto-jtag-bootstrap`, version
+`0.39`.
+
+1. Run `bitbake-layers show-recipes pluto-jtag-bootstrap`. The output gives the layer and the version.
+2. Run `bitbake-getvar -r pluto-jtag-bootstrap --value FILE`. The output gives the full path of the `.bb` file.
+3. Run `bitbake-layers show-appends`. Find the recipe in the list. Each `.bbappend` under it changes the recipe.
+
+#### Recipe to source location
+
+`SRC_URI` in the recipe gives the source location. `SRC_URI[sha256sum]` or
+`SRCREV` pins the version.
+
+1. Run `bitbake-getvar -r pluto-jtag-bootstrap SRC_URI`.
+2. Read the history in the output. It gives each file and line that sets or changes `SRC_URI`, then the final value.
+
+`bitbake-getvar` without `--value` shows this history for each variable.
+
+#### Recipe to files on the build host
+
+| Item              | Location                                                  | Command                                               |
+| ----------------- | --------------------------------------------------------- | ----------------------------------------------------- |
+| Downloaded source | `DL_DIR`, for example `plutosdr-jtag-bootstrap-v0.39.zip` | `bitbake-getvar --value DL_DIR`                       |
+| Work directory    | `${TMPDIR}/work/<arch>/<recipe>/<version>/`               | `bitbake-getvar -r <recipe> --value WORKDIR`          |
+| Unpacked source   | `S` in the work directory                                 | `bitbake-getvar -r <recipe> --value S`                |
+| Task logs         | `${WORKDIR}/temp/log.do_<task>`                           | `bitbake-getvar -r <recipe> --value T`                |
+| Deployed output   | `build/deploy/images/pluto/`                              | `bitbake-getvar -r <recipe> --value DEPLOY_DIR_IMAGE` |
+
+`rm_work` removes the work directory after a successful build (section 5.6).
+Add the recipe to `RM_WORK_EXCLUDE` to keep it.
+
+#### Other searches
+
+| Question                                        | Command                                                                                                 |
+| ----------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| Which package installs this file on the target? | `oe-pkgdata-util find-path /usr/sbin/dropbear`                                                          |
+| Which recipe makes this package?                | `oe-pkgdata-util lookup-recipe <package>`                                                               |
+| Which files does this package contain?          | `oe-pkgdata-util list-pkg-files <package>`                                                              |
+| Why does the image contain this recipe?         | `bitbake -g core-image-minimal`, then `oe-depends-dot -k <recipe> -w task-depends.dot`                  |
+| Which recipe provides `virtual/kernel`?         | `bitbake-getvar --value PREFERRED_PROVIDER_virtual/kernel`                                              |
+| Which recipes contain a word?                   | `bitbake-layers show-recipes '*<word>*'`                                                                |
+| Which layer files set this variable?            | `grep -rn '<VARIABLE>' meta-pluto-platform openembedded-core/meta meta-yocto meta-openembedded/meta-oe` |
+
+`oe-pkgdata-util` reads package data from completed builds. It finds no
+package that BitBake did not build.
 
 ## 16. Metadata syntax reference
 
